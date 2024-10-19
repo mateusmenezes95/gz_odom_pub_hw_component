@@ -1,0 +1,10 @@
+<library path="gz_odom_pub_hw_component">
+  <class name="gz_odom_pub_hw_component/GzOdomPubHwComponent"
+         type="gz_odom_pub_hw_component::GzOdomPubHwComponent"
+         base_class_type="gz_ros2_control::GazeboSimSystemInterface">
+    <description>
+      ros2_control Hardware Component to get data from the gz Odometry
+      Publisher plugin topic and provides as state interfaces
+    </description>
+  </class>
+</library>
