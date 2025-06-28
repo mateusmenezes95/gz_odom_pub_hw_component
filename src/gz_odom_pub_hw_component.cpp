@@ -20,6 +20,15 @@
 
 #include "gz_odom_pub_hw_component/gz_odom_pub_hw_component.hpp"
 
+#include <fmt/compile.h>
+
+#include <array>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
 #include "gz/sim/Entity.hh"
 #include "gz/sim/EntityComponentManager.hh"
 #include "hardware_interface/hardware_info.hpp"
@@ -28,40 +37,133 @@
 namespace gz_odom_pub_hw_component
 {
 
-bool GzOdomPubHwComponent::initSim(
-    rclcpp::Node::SharedPtr & model_nh,
-    std::map<std::string, sim::Entity> & joints,
-    const hardware_interface::HardwareInfo & hardware_info,
-    sim::EntityComponentManager & _ecm,
-    unsigned int update_rate) {
-  nh_ = model_nh;
-  std::ignore = joints;
-  std::ignore = hardware_info;
-  std::ignore = _ecm;
-  std::ignore = update_rate;
+hardware_interface::CallbackReturn GzOdomPubHwComponent::on_init(
+  const hardware_interface::HardwareInfo & hardware_info)
+{
+  RCLCPP_INFO(this->get_logger(), "Initializing %s hardware component",
+    this->get_name().c_str());
 
-  RCLCPP_INFO(nh_->get_logger(), "Odometry publisher hardware component initialized");
+  if (hardware_interface::SensorInterface::on_init(hardware_info) !=
+    hardware_interface::CallbackReturn::SUCCESS)
+  {
+    return hardware_interface::CallbackReturn::ERROR;
+  }
 
-  return true;
+  auto set_hw_param = [&](auto & param_value, const std::string & param_name) {
+      if (hardware_info.hardware_parameters.find(param_name) ==
+        hardware_info.hardware_parameters.end())
+      {
+        throw std::runtime_error(
+          fmt::format(
+            FMT_COMPILE("Required parameter '{}' not found in hardware info"), param_name));
+      }
+
+      param_value = hardware_info.hardware_parameters.at(param_name);
+
+      RCLCPP_INFO(this->get_logger(),
+        "Parameter '%s' set to '%s'", param_name.c_str(), param_value.c_str());
+    };
+
+  try {
+    set_hw_param(params_.odom_topic_name, kOdomTopicParamName);
+    set_hw_param(params_.ref_frame, kRefFrameParamName);
+  } catch(const std::exception & e) {
+    RCLCPP_FATAL(this->get_logger(), "Fatal error during initialization: %s", e.what());
+    return hardware_interface::CallbackReturn::ERROR;
+  }
+
+  auto complain_about_ifaces_set_in_urdf =
+    [&](std::unordered_map<std::string, hardware_interface::InterfaceDescription> & ifaces) {
+      if (ifaces.empty()) {
+        return;
+      }
+
+      std::stringstream ss;
+      for (const auto & [name, _] : ifaces) ss << "'" << name << "'";
+
+      RCLCPP_WARN(
+        this->get_logger(),
+        "The following interfaces were set in the URDF but are not used by this component: %s.",
+        ss.str().c_str());
+
+      ifaces.clear();
+    };
+
+  // This component export only the states interfaces related to the odometry data,
+  // so interfaces set in the URDF will be ignored.
+  complain_about_ifaces_set_in_urdf(joint_state_interfaces_);
+  complain_about_ifaces_set_in_urdf(sensor_state_interfaces_);
+
+  RCLCPP_INFO(
+    this->get_logger(), "%s hardware component initialized successfully",
+    this->get_name().c_str());
+
+  return hardware_interface::CallbackReturn::SUCCESS;
 }
 
 hardware_interface::CallbackReturn GzOdomPubHwComponent::on_configure(
   const rclcpp_lifecycle::State & previous_state)
 {
-  std::ignore = previous_state;
+  RCLCPP_INFO(
+    this->get_logger(), "Configuring %s component. Previous state: %s",
+    this->get_name().c_str(), previous_state.label().c_str());
 
-  RCLCPP_INFO(nh_->get_logger(), "Configuring odometry publisher hardware component");
+  if (params_.ref_frame != "enu" && params_.ref_frame != "ned") {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "Invalid reference frame '%s'. Supported frames are 'enu' and 'ned'. Defaulting to 'enu'.",
+      params_.ref_frame.c_str());
+    params_.ref_frame = "enu";
+    enu_to_ned_helper_ = 1.0;  // Default to ENU
+  }
 
-  auto cb = [this](const gz::msgs::Odometry & msg) -> void {
-    odom_rt_buffer_.writeFromNonRT(msg);
+  if (params_.ref_frame == "ned") {
+    enu_to_ned_helper_ = -1.0;  // Convert ENU to NED
+  }
+
+  auto odom_cb = [this](const gz::msgs::Odometry & msg) -> void {
+    odom_rt_buffer_.set(msg);
   };
 
-  if (!gz_node_.Subscribe<gz::msgs::Odometry>("bluerov2/gz_odometry", cb)) {
-    RCLCPP_ERROR(nh_->get_logger(), "Failed to subscribe to odometry topic");
+  if (!gz_node_.Subscribe<gz::msgs::Odometry>(params_.odom_topic_name, odom_cb)) {
+    RCLCPP_ERROR(
+      this->get_logger(), "Failed to subscribe to '%s' topic", params_.odom_topic_name.c_str());
     return hardware_interface::CallbackReturn::FAILURE;
   }
 
+  for (const auto & [name, desc] : sensor_state_interfaces_) {
+    RCLCPP_DEBUG(this->get_logger(),
+      "Sensor state interface '%s' with data type '%s' configured",
+      name.c_str(), desc.get_data_type_string().c_str());
+  }
+
+  RCLCPP_INFO(
+    this->get_logger(), "%s hardware component configured successfully",
+    this->get_name().c_str());
+
   return hardware_interface::CallbackReturn::SUCCESS;
+}
+
+std::vector<hardware_interface::InterfaceDescription>
+GzOdomPubHwComponent::export_unlisted_state_interface_descriptions()
+{
+  std::vector<hardware_interface::InterfaceDescription> iface_descriptions;
+  std::array<std::string, kNumberOfStateInterfaces> state_interface_names = {
+    "angular_vel_x", "angular_vel_y", "angular_vel_z",
+    "linear_vel_x", "linear_vel_y", "linear_vel_z",
+    "quaternion_w", "quaternion_x", "quaternion_y", "quaternion_z",
+    "roll", "pitch", "yaw",
+    "position_x", "position_y", "position_z"
+  };
+  hardware_interface::InterfaceInfo iface_info;
+
+  for (const auto & name : state_interface_names) {
+    iface_info.name = name;
+    iface_info.data_type = "double";  // All interfaces are of type double
+    iface_descriptions.emplace_back("odom", iface_info);
+  }
+
+  return iface_descriptions;
 }
 
 hardware_interface::return_type GzOdomPubHwComponent::read(
@@ -70,37 +172,37 @@ hardware_interface::return_type GzOdomPubHwComponent::read(
   std::ignore = time;
   std::ignore = period;
 
-  odom_msg_ = *odom_rt_buffer_.readFromRT();
+  // This is not real-time safe, but it is not expected to be called in a real-time context
+  // as this component should be used in simulation environments where
+  // the odometry data is published by a Gazebo plugin.
+  odom_msg_ = odom_rt_buffer_.get();
 
-  this->set_state("bluerov2/velocity/angular/x", odom_msg_.twist().angular().x());
-  this->set_state("bluerov2/velocity/angular/y", -odom_msg_.twist().angular().y());
-  this->set_state("bluerov2/velocity/angular/z", -odom_msg_.twist().angular().z());
+  this->set_state("odom/angular_vel_x", odom_msg_.twist().angular().x());
+  this->set_state("odom/angular_vel_y", odom_msg_.twist().angular().y() * enu_to_ned_helper_);
+  this->set_state("odom/angular_vel_z", odom_msg_.twist().angular().z() * enu_to_ned_helper_);
 
-  this->set_state("bluerov2/velocity/linear/x", odom_msg_.twist().linear().x());
-  this->set_state("bluerov2/velocity/linear/y", -odom_msg_.twist().linear().y());
-  this->set_state("bluerov2/velocity/linear/z", -odom_msg_.twist().linear().z());
+  this->set_state("odom/linear_vel_x", odom_msg_.twist().linear().x());
+  this->set_state("odom/linear_vel_y", odom_msg_.twist().linear().y() * enu_to_ned_helper_);
+  this->set_state("odom/linear_vel_z", odom_msg_.twist().linear().z() * enu_to_ned_helper_);
+
+  this->set_state("odom/quaternion_w", odom_msg_.pose().orientation().w());
+  this->set_state("odom/quaternion_x", odom_msg_.pose().orientation().x());
+  this->set_state("odom/quaternion_y", odom_msg_.pose().orientation().y());
+  this->set_state("odom/quaternion_z", odom_msg_.pose().orientation().z());
 
   orientation_quaternion_.Set(odom_msg_.pose().orientation().w(),
                               odom_msg_.pose().orientation().x(),
                               odom_msg_.pose().orientation().y(),
                               odom_msg_.pose().orientation().z());
 
-  this->set_state("bluerov2/orientation/roll", orientation_quaternion_.Euler().X());
-  this->set_state("bluerov2/orientation/pitch", orientation_quaternion_.Euler().Y());
-  this->set_state("bluerov2/orientation/yaw", orientation_quaternion_.Euler().Z());
+  this->set_state("odom/roll", orientation_quaternion_.Euler().X());
+  this->set_state("odom/pitch", orientation_quaternion_.Euler().Y() * enu_to_ned_helper_);
+  this->set_state("odom/yaw", orientation_quaternion_.Euler().Z() * enu_to_ned_helper_);
 
-  this->set_state("bluerov2/position/x", odom_msg_.pose().position().x());
-  this->set_state("bluerov2/position/y", odom_msg_.pose().position().y());
-  this->set_state("bluerov2/position/z", -odom_msg_.pose().position().z());
+  this->set_state("odom/position_x", odom_msg_.pose().position().x());
+  this->set_state("odom/position_y", odom_msg_.pose().position().y() * enu_to_ned_helper_);
+  this->set_state("odom/position_z", -odom_msg_.pose().position().z() * enu_to_ned_helper_);
 
-  return hardware_interface::return_type::OK;
-}
-
-hardware_interface::return_type GzOdomPubHwComponent::write(
-  const rclcpp::Time & time, const rclcpp::Duration & period)
-{
-  std::ignore = time;
-  std::ignore = period;
   return hardware_interface::return_type::OK;
 }
 
@@ -109,5 +211,5 @@ hardware_interface::return_type GzOdomPubHwComponent::write(
 #include "pluginlib/class_list_macros.hpp"  // NOLINT
 PLUGINLIB_EXPORT_CLASS(
   gz_odom_pub_hw_component::GzOdomPubHwComponent,
-  gz_ros2_control::GazeboSimSystemInterface
+  hardware_interface::SensorInterface
 )

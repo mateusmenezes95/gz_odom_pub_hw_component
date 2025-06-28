@@ -56,7 +56,7 @@ ament_target_dependencies(gz_odom_pub_hw_component
   ${DEPENDENCIES_FOR_THIS_PACKAGE}
 )
 
-pluginlib_export_plugin_description_file(gz_ros2_control
+pluginlib_export_plugin_description_file(hardware_interface
   gz_odom_pub_hw_component.xml
 )
 
@@ -75,17 +75,27 @@ install(
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
-  # the following line skips the linter which checks for copyrights
-  # comment the line when a copyright and license is added to all source files
-  set(ament_cmake_copyright_FOUND TRUE)
-  # the following line skips cpplint (only works in a git repo)
-  # comment the line when this package is in a git repo and when
-  # a copyright and license is added to all source files
-  set(ament_cmake_cpplint_FOUND TRUE)
+  find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_gmock REQUIRED)
+  find_package(ros2_control_test_assets REQUIRED)
+
   ament_lint_auto_find_test_dependencies()
 
-  ament_add_gtest(test_gz_odom_pub_hw_component
+  ament_add_gtest(test_gz_odom_pub_hw_component_loader
     test/gz_odom_pub_hw_component_loader.cpp
+  )
+
+  target_link_libraries(test_gz_odom_pub_hw_component_loader
+    gz_odom_pub_hw_component
+  )
+
+  ament_target_dependencies(test_gz_odom_pub_hw_component_loader
+    pluginlib
+    gz_ros2_control
+  )
+
+  ament_add_gmock(test_gz_odom_pub_hw_component
+    test/test_gz_odom_pub_hw_component.cpp
   )
 
   target_link_libraries(test_gz_odom_pub_hw_component
@@ -93,8 +103,11 @@ if(BUILD_TESTING)
   )
 
   ament_target_dependencies(test_gz_odom_pub_hw_component
+    hardware_interface
     pluginlib
-    gz_ros2_control
+    rclcpp
+    rclcpp_lifecycle
+    ros2_control_test_assets
   )
 endif()
 

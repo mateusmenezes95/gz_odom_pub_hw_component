@@ -22,18 +22,18 @@
 
 #include "gz_odom_pub_hw_component/gz_odom_pub_hw_component.hpp"
 
-#include "gz_ros2_control/gz_system_interface.hpp"
+#include "hardware_interface/sensor_interface.hpp"
 
 TEST(GazeboSystemLoader, Successfully_load_the_hw_component_plugin)
 {
-  std::unique_ptr<pluginlib::ClassLoader<gz_ros2_control::GazeboSimSystemInterface>>
+  std::unique_ptr<pluginlib::ClassLoader<hardware_interface::SensorInterface>>
   pluginlib_loader_ptr_;
 
   EXPECT_NO_THROW(
     pluginlib_loader_ptr_ = std::make_unique<
-      pluginlib::ClassLoader<gz_ros2_control::GazeboSimSystemInterface>>(
-      "gz_ros2_control",
-      "gz_ros2_control::GazeboSimSystemInterface"));
+      pluginlib::ClassLoader<hardware_interface::SensorInterface>>(
+      "hardware_interface",
+      "hardware_interface::SensorInterface"));
   auto plugin_ = pluginlib_loader_ptr_->createUniqueInstance(
     "gz_odom_pub_hw_component/GzOdomPubHwComponent");
   EXPECT_TRUE(
